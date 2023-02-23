@@ -175,6 +175,16 @@ sudo vim /etc/sudoers
 	sudo apt update
 	sudo apt upgrade
 
+# PARTIONING
+	->its fixedallocation (didnt specify in pdf that need to fixed)
+	->it is 8GB in GB's not GiB's
+	->partioning is 4.2GB
+	-> to check use parted command
+		sudo parted
+		unit GB
+		print
+		->i could have resized with parted but choose not to. FIGHT ME
+
 # make & sudo new user
 	sudo adduser eval
 	sudo chmod +w /etc/sudoers
@@ -228,8 +238,11 @@ sudo vim /etc/sudoers
 
 # test f2b
 	python3 slowloris.py 10.12.173.109
-	-> fail2ban-client get http-get-dos banned
-	-> fail2ban-client set http-get-dos unbanip 10.12.2.13 (unbanning)
+	-> sudo fail2ban-client get http-get-dos banned
+	-> sudo fail2ban-client set http-get-dos unbanip 10.12.2.13 (unbanning)
+		-> cat /var/log/apache2/access.log
+		-> slowloris
+		-> cat /var/log/apache2/access.log
 
 # list open ports (portsentry)
 	lsof -i -P
