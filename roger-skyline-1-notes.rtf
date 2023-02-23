@@ -1,0 +1,246 @@
+# install debian 8GB with prationing 4.2 primary/4.4 log
+1. the partioning is not exact, but it could be modified by allocating more for the primary.
+
+# installing sudo & packages
+apt install sudo
+sudo apt update
+sudo apt upgrade
+
+# create non-root user, if not done already at conf, and give it sudo rights.
+sudo adduser jyri
+
+# give it sudo rights
+sudo chmod +w /etc/sudoers
+sudo vim /etc/sudoers
+
+# configure your Static IP
+1. VM -> Settings -> network -> switch NAT to Bridged
+2. sudo vim /etc/network/interfaces
+3. set primary to: auto enp0s3
+4. sudo touch /etc/network/interfaces.d/enp0s3
+5. sudo vim /etc/network/interfaces.d/enp0s3
+6.  iface enp0s3 inet static
+    	address 10.12.173.109
+   		netmask 255.255.255.252
+   		gateway 10.12.254.254
+7. sudo service networking restart
+8. ip a -> check if enp0s3 is up
+
+# Setting SSH port
+1. sudo vim /etc/ssh/sshd_config
+2. modify section #port22 to port of your choosing (in this case i use 50113)
+3. restart ssh
+4. sudo /etc/init.d/ssh restart
+5. verify by typing ssh 'jyri@10.12.173.109' -p 50113
+
+# Setup SSH access with pub key
+1. if needed generate SSH key if needed (ssh-keygen -t rsa)
+2. it will make public and private keys on ~/.ssh/ folder, we will use the public key and copy it to ~/ssh/authorized_keys on the server.
+3. ssh-copy-id -i /Users/jrummuka/.ssh/id_rsa.pub jyri@10.12.173.109 -p 50113
+4. secure out the root login via SSH
+5. sudo vim /etc/ssh/sshd_config
+6. #PasswordAuthentication to no
+7. #PermitRootLogin to no
+8. restart service with
+9. sudo service sshd restart
+10. check status of service
+11. sudo service sshd status
+12. remote connect -> should be only ok with public key
+
+# Firewall UFW
+1. sudo apt intall ufw
+2. set the following rules (shamelessly ripped from stack)
+3. sudo ufw default deny incoming
+4. sudo ufw default allow outgoing
+5. sudo ufw allow 443
+6. sudo ufw allow 80/tcp
+7. sudo ufw allow 50113/tcp
+8. enable changes
+9. sudo ufw enable
+10. check status
+11. sudo ufw status verbose
+
+# DDOS prevention
+1. install needed packets
+2. sudo apt-get install iptables fail2ban apache2
+3. sudo vim /etc/fail2ban/jail.d/jail-debian.local
+4. add following absolutely mind bogging ruleset:
+ [DEFAULT]
+  bantime  = 10m
+  findtime  = 10m
+  maxretry = 5
+
+  [sshd]
+  enabled = true
+  port = 50113
+  maxretry = 3
+  findtime = 300
+  bantime = 600
+  logpath = %(sshd_log)s
+  backend = %(sshd_backend)s
+
+  [http-get-dos]
+  enabled = true
+  port = http,https
+  filter = http-get-dos
+  logpath = /var/log/apache2/access.log
+  maxretry = 300
+  findtime = 300
+  bantime = 600
+  action = iptables[name=HTTP, port=http, protocol=tcp]
+5. sudo vim /etc/fail2ban/filter.d/http-get-dos.conf
+6. add following rules (regex to filter normal server activity)
+	[Definition]
+	failregex = ^<HOST> -.*"(GET|POST).*
+	ignoreregex =
+7. sudo ufw reload
+8. sudo service fail2ban restart
+9. sudo systemctl enable fail2ban
+10. check the status of fail2ban: sudo systemctl status fail2ban, see the rules at: sudo iptables -L
+11. failed logins: tail -f /var/log/fail2ban.log, and banned actions: sudo fail2ban-client status sshd
+12. use slowloris etc to test?
+
+# Setup Portsentry
+1. sudo apt-get update && apt-get install portsentry
+2. modify /etc/default/portsentry
+3.	TCP_MODE="atcp"
+	UDP_MODE="audp"
+4. modify /etc/portsentry/portsentry.conf to block UDP/TCP scans
+5.	BLOCK_UDP="1"
+	BLOCK_TCP="1"
+6. uncomment ->
+	KILL_ROUTE="/sbin/iptables -I INPUT -s $TARGET$ -j DROP"
+7. commentout ->
+	#KILL_ROUTE="/sbin/route add -host $TARGET$ reject"
+8. sudo service portsentry restart
+9. sudo service portsentry status
+10. Check open ports: lsof -i -P
+
+# Disable the service not needed
+1. list projects with: sudo systemctl list-units --type service --all
+2. check enabled ones: sudo systemctl list-unit-files --type service | grep enabled
+3. disable unneeded services (non masked ones)
+4. google gives list of needed
+5. sudo systemctl disable SERVICE_NAME
+
+# easier way to disable unneeded services
+1. ls /etc/init.d
+2. sudo systemctl disable <servicename>
+3. following are needed atleast:
+	Apache2.service (web and fail2ban in my case)
+	apparmor (Access control)
+	cron (scheculed tasks)
+	fail2ban (banning)
+	getty (login)
+	postfix (needed for mailing)
+	rsyslog (logs)
+	ssh.service (ssh)
+	systemd-timesync (timesyncing network)
+	ufw.service (firewall)
+
+# Scripts for updates
+
+1. make script called update.sh
+2. #!/bin/bash
+		now=$(date)
+		echo "$now Running now updates ----" >> /var/log/update_script.log
+		sudo apt-get update -y >> /var/log/update_script.log
+		sudo apt-get upgrade -y >> /var/log/update_script.log
+
+3. It should be made under root or changed to root with chown command?
+4. modify crontab
+5. sudo crontab -e
+6. add following lines:
+	0 4 * * 0 sudo ~scripts/update.sh
+	@reboot sudo ~/scripts/update.sh
+
+# script for notifying when cron tab is modified (fucked up mutt mail solution)
+	1. sudo vim crontab_monitor.sh > sudo chmod 755 crontab_monitor.sh
+	2. #!/bin/bash
+		DIFF=$(diff /etc/crontab.back /var/log/update.log)
+		cat /etc/crontab > /etc/crontab.back
+		if [ "$DIFF" != "" ]; then
+    		echo "crontab check: changed, notifying admin." | sudo mail -s "crontab modified" root@debian.roger
+		fi
+	3. so take a diff of new and old crontab, then replace the crontab.back file, 
+		if there is difference give out put and send mail to root (root@debian.roger) 
+	4. to test modify crontab -e, run the script, type mutt to check mailbox
+	5. add automation to crontab and add the line:
+		0 0 * * * sudo ~/scripts/cron_monitor.sh
+
+# FOR EVALAUTIONS:
+
+# getting the given tools needed in this one:
+	apt install sudo
+	sudo apt update
+	sudo apt upgrade
+
+# make & sudo new user
+	sudo adduser eval
+	sudo chmod +w /etc/sudoers
+	sudo vim /etc/sudoers
+		-> eval ALL=(ALL:ALL) ALL to # User priviliege specification
+
+# configuring dhcp
+	VM->setting->network and change to bridged
+	sudo vim /etc/network/interfaces
+		-> auto enp0s3 to #The primary network interface
+	sudo vim /etc/network/interfaces.d/
+		->  iface enp0s3 inet static
+   				address 10.12.173.109
+    			netmask 255.255.255.252
+    			gateway 10.12.254.254
+
+				(if wanted to be something other than 30 netmask, we use
+				255.255.255.248 = /29
+				255.255.255.240 = /28
+				255.255.255.0 = /24
+				etc...)
+	sudo service networking restart
+	#ip a (systemctl status networking)
+		-> is enp0s3 enabled?
+
+# check if dhcp is enabled
+	1. sudo cat /etc/network/interfaces
+
+# modifying the port
+	sudo vim /etc/ssh/sshd_config
+		-> #port22 to port 50113
+	sudo /etc/init.d/ssh restart
+	ssh 'eval@10.12.173.109' -p 50113
+
+#setup ssh connection (CAN DO EARLIER :))
+	ssh-copy-id -i /Users/jrummuka/.ssh/id_rsa.pub eval@10.12.173.109 -p 50113
+	sudo vim /etc/ssh/sshd_config
+		-> #PasswordAuthentication to no
+		-> #PermitRootLogin to no
+	sudo service sshd restart
+	sudo service sshd status
+	try connecting without public key, also root connect should be disabled now
+
+# List firewall rules
+	sudo ufw status verbose
+		-> output example (done if going to do web)
+		-> should allow outgoing not incoming in general?
+		443 (v6)                   ALLOW IN    Anywhere (v6) HTTPS        
+		80/tcp (v6)                ALLOW IN    Anywhere (v6) HTTP         
+		50113/tcp (v6)             ALLOW IN    Anywhere (v6) SSH
+
+# test f2b
+	python3 slowloris.py 10.12.173.109
+	-> fail2ban-client get http-get-dos banned
+	-> fail2ban-client set http-get-dos unbanip 10.12.2.13 (unbanning)
+
+# list open ports (portsentry)
+	lsof -i -P
+	(hopefully correct) :D
+
+# list of running services
+	sudo systemctl list-unit-files --type service | grep enabled
+
+# update.sh & cron_monitor.sh script
+	as root -> cat update.sh
+	as root -> cat cron monitor.sh
+	sudo crontab -e to check automation
+
+
